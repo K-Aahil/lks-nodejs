@@ -7,6 +7,7 @@ const {
     MongoClient,
     ServerApiVersion, ObjectId
 } = require('mongodb');
+const {pdfToPng} = require("pdf-to-png-converter");
 const uri = process.env.MONGODB_URI;
 if (!uri) {
     console.log("MONGODB_URI not set");
@@ -23,6 +24,69 @@ app.use(bodyParser.urlencoded({
     extended: true
 }));
 
+//check if database initialized
+client.connect(async function (err, connect) {
+    if (err) {
+        console.log("Database connection failed");
+        process.exit(1);
+    }
+    console.log("Database connection successful");
+    //get collection of auth, token, drugs, transaction
+    //create collection if not exists
+    try {
+        let collectionsNeeded = ["auth", "token", "drugs", "transaction", "drugsType"];
+        const db = connect.db(process.env.MONGODB_DATABASE);
+        const collections = await db.listCollections().toArray();
+        for (let i = 0; i < collections.length; i++) {
+            //if matched, remove from collectionsNeeded
+            const collectionName = collections[i].name;
+            if (collectionsNeeded.indexOf(collectionName) > -1) {
+                collectionsNeeded.splice(collectionsNeeded.indexOf(collectionName), 1);
+            }
+        }
+        //create collections
+        for (let i = 0; i < collectionsNeeded.length; i++) {
+            console.log("Creating collection: " + collectionsNeeded[i]);
+            await db.createCollection(collectionsNeeded[i]);
+        }
+
+        //generate random drugs if collection is empty
+        const drugs = await db.collection('drugs');
+        const drugsCount = await drugs.countDocuments();
+        console.log("Drugs count: " + drugsCount);
+        if (drugsCount < 10) {
+            console.log("Generating random drugs");
+            const drugsData = [];
+            for (let i = 0; i < 100; i++) {
+                drugsData[i] = {
+                    _id: "Obat " + i,
+                    name: "Obat " + i,
+                    price: (Math.floor(Math.random() * 95) + 5) * 1000,
+                };
+            }
+            await drugs.insertMany(drugsData);
+        }
+        //generate drugs type
+        const drugsTypeConst = ["tablet", "capsule", "syrup", "injection", "other"];
+        const drugsType = await db.collection('drugsType');
+        const drugsTypeCount = await drugsType.countDocuments();
+        console.log("Drugs type count: " + drugsTypeCount);
+        if (drugsTypeCount !== drugsTypeConst.length) {
+            //delete all drugs type
+            await drugsType.deleteMany({});
+            //insert new drugs type
+            await drugsType.insertMany(drugsTypeConst.map(type => ({
+                _id: type,
+                name: type
+            })));
+        }
+        await client.close();
+    } catch (err) {
+        console.log("Database initialization failed");
+        console.log(err);
+        process.exit(1);
+    }
+});
 
 async function randomToken(username) {
     //check in database if user already exists
@@ -32,14 +96,18 @@ async function randomToken(username) {
     const token = await collection.findOne({
         username: username
     });
-    await connect.close();
-    if (token) {
+
+    if (token && token.token) {
+        await connect.close();
         return token.token;
     }
     const tokenGenerated = crypto.randomBytes(32).toString(`hex`);
     const tokenInserted = await collection.insertOne({
+        _id: username,
         username: username,
+        token: tokenGenerated
     });
+    await connect.close();
     if (!tokenInserted.insertedId) {
         throw {
             "error": "token.not.inserted"
@@ -50,7 +118,7 @@ async function randomToken(username) {
 
 function hashPassword(password) {
     // Creating a unique salt for a particular user
-    const salt = randomToken();
+    const salt = crypto.randomBytes(32).toString(`hex`);
 
     // Hashing user's salt and password with 1000 iterations,
 
@@ -87,7 +155,8 @@ app.get('/', function (req, res) {
     });
 })
 
-app.post("/auth/register", async function (req, res) {
+
+app.post("/register", async function (req, res) {
     console.log('Got body:', req.body);
     if (req.body.username && req.body.password && req.body.alamat && req.body.namaLengkap) {
         //check in database if user already exists
@@ -102,7 +171,8 @@ app.post("/auth/register", async function (req, res) {
             "password": hashedPass,
             "alamat": req.body.alamat,
             "nama.lengkap": req.body.namaLengkap,
-            "username": username
+            "username": username,
+            "_id": username
         };
         const connection = await client.connect();
         const db = await connection.db(process.env.MONGODB_DATABASE);
@@ -118,7 +188,7 @@ app.post("/auth/register", async function (req, res) {
             });
         }
         const me = await collection.insertOne(auth);
-        if (!result.acknowledged) {
+        if (!me.acknowledged) {
             res.status(400);
             return res.send({
                 "error": "Username exists"
@@ -135,7 +205,7 @@ app.post("/auth/register", async function (req, res) {
         "error": "Invalid Body"
     });
 });
-app.post("/auth/login", async function (req, res) {
+app.post("/login", async function (req, res) {
     console.log('Got body:', req.body);
     if (req.body.username && req.body.password) {
         try {
@@ -255,6 +325,27 @@ app.get("/drugs/:id", async function (req, res) {
 
 
 const validDrugType = ["tablet", "syrup"];
+
+async function getDrugsType() {
+    const connect = await client.connect();
+    const db = connect.db(process.env.MONGODB_DATABASE);
+    const collection = db.collection('drugsType');
+    const drugsType = await collection.find().toArray();
+    await connect.close();
+    //to array
+    return drugsType.map(drugType => drugType.name);
+}
+
+app.get("/drugsType", async function (req, res) {
+    const drugsType = await getDrugsType();
+    if (drugsType) {
+        return res.send(drugsType);
+    }
+    res.status(400);
+    return res.send({
+        "error": "drugsType.not.exists"
+    });
+});
 app.post("/transaction", async function (req, res) {
     console.log('Got body:', req.body);
     //drugs list, drug type, patient name
@@ -455,23 +546,44 @@ async function generatePDFInvoice(id) {
     }
 
      */
-    const invoice = await easyinvoice.createInvoice(data);
-    return invoice;
+    return await easyinvoice.createInvoice(data);
+}
+
+//buffer bytes pdf to png buffer
+async function convertToPng(pdf) {
+    const out = await pdfToPng(pdf);
+    //check length
+    if (out.length === 0) {
+        throw new Error("pdf.to.png.failed");
+    }
+    return out[0].content;
 }
 
 app.get("/invoice/:id", async function (req, res) {
     console.log('Got body:', req.body);
     //drugs list, drug type, patient name
     //store to transaction collection
-    if (req.params.id) {
+    let id = req.params.id;
+    if (id) {
+        //check if end with .png
+        let isPNG = id.endsWith(".png");
+        if (isPNG) {
+            //remove .png
+            id = id.substring(0, id.length - 4);
+        }
         try {
-            const invoice = await generatePDFInvoice(req.params.id);
+            const invoice = await generatePDFInvoice(id);
             if (invoice) {
-                const buf = Buffer.from(invoice.pdf, 'base64');
-                //its a pdf
-                res.setHeader('Content-Type', 'application/pdf');
+                let buf = Buffer.from(invoice.pdf, 'base64');
+                //it's a pdf
+                if (isPNG) {
+                    buf = await convertToPng(buf);
+                    res.setHeader('Content-Type', 'image/png');
+                } else {
+                    res.setHeader('Content-Type', 'application/pdf');
+                    res.setHeader('Content-Disposition', 'inline; filename=${invoice.number}.pdf');
+                }
                 res.setHeader('Content-Length', buf.length);
-                res.setHeader('Content-Disposition', 'inline; filename=${invoice.number}.pdf');
                 return res.send(buf);
             }
         } catch (error) {
