@@ -94,7 +94,7 @@ async function randomToken(username) {
     const db = connect.db(process.env.MONGODB_DATABASE);
     const collection = db.collection('token');
     const token = await collection.findOne({
-        username: username
+        _id: username
     });
 
     if (token && token.token) {
@@ -104,7 +104,6 @@ async function randomToken(username) {
     const tokenGenerated = crypto.randomBytes(32).toString(`hex`);
     const tokenInserted = await collection.insertOne({
         _id: username,
-        username: username,
         token: tokenGenerated
     });
     await connect.close();
