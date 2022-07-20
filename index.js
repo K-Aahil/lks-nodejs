@@ -193,7 +193,7 @@ app.post("/register", async function (req, res) {
                 "error": "Username exists"
             });
         }
-        const token = randomToken(username);
+        const token = await randomToken(username);
 
         return res.send({
             "token": token
@@ -201,7 +201,7 @@ app.post("/register", async function (req, res) {
     }
     res.status(400);
     return res.send({
-        "error": "Invalid Body"
+        "error": "invalid.form"
     });
 });
 app.post("/login", async function (req, res) {
