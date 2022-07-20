@@ -23,7 +23,12 @@ const app = express()
 app.use(bodyParser.urlencoded({
     extended: true
 }));
-
+app.use((err, req, res, next) => {
+    console.error(err.stack)
+    res.status(500).send({
+        error: err.message
+    })
+})
 //check if database initialized
 client.connect(async function (err, connect) {
     if (err) {
@@ -80,7 +85,7 @@ client.connect(async function (err, connect) {
                 name: type
             })));
         }
-        await client.close();
+        await connect.close();
     } catch (err) {
         console.log("Database initialization failed");
         console.log(err);
@@ -219,12 +224,12 @@ app.post("/login", async function (req, res) {
         }
         res.status(401);
         return res.send({
-            "error": "Invalid Password"
+            "error": "invalid.password"
         });
     }
     res.status(400);
     return res.send({
-        "error": "Invalid Body"
+        "error": "invalid.password"
     });
 })
 
@@ -287,7 +292,9 @@ app.get("/drugs", async function (req, res) {
     const drugs = await collection.find().toArray();
     await connect.close();
     if (drugs) {
-        return res.send(drugs);
+        return res.send({
+            "drugs": drugs
+        });
     }
     res.status(400);
     return res.send({
@@ -338,7 +345,9 @@ async function getDrugsType() {
 app.get("/drugsType", async function (req, res) {
     const drugsType = await getDrugsType();
     if (drugsType) {
-        return res.send(drugsType);
+        return res.send({
+            "drugsType": drugsType
+        });
     }
     res.status(400);
     return res.send({
